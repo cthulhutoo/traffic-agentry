@@ -1,0 +1,9 @@
+# Proxy /api/metrics to the Netlify Function. The trailing `!` forces this
+# rule to win over any static file at the same path (file shadowing).
+/api/metrics    /.netlify/functions/traffic-metrics    200!
+
+# SPA fallback for the React dashboard's hash-routed pages. This MUST come
+# after the function rule above; otherwise it would catch /api/* and serve
+# index.html. Netlify always processes /.netlify/functions/* internally
+# before applying _redirects, so direct function URLs still work.
+/*              /index.html                            200

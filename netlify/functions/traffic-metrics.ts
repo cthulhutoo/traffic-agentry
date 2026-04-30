@@ -46,6 +46,6 @@ export default async (_req: Request) => {
   }
 };
 
-export const config = {
-  path: "/api/metrics",
-};
+// Routing is handled by netlify.toml redirects (/api/metrics ->
+// /.netlify/functions/traffic-metrics). Keeping a minimal config here.
+export const config = {};
