@@ -1,0 +1,30 @@
+[build]
+  command   = "npm run build"
+  publish   = "dist/public"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# /api/metrics is also declared via the function's `config.path`, but we keep
+# an explicit redirect as a belt-and-braces fallback in case the function
+# config is ever ignored by an older Netlify build image.
+[[redirects]]
+  from   = "/api/metrics"
+  to     = "/.netlify/functions/traffic-metrics"
+  status = 200
+  force  = true
+
+# SPA fallback - hash routing means we serve index.html for any unknown path.
+[[redirects]]
+  from   = "/*"
+  to     = "/index.html"
+  status = 200
+
+[functions]
+  node_bundler = "esbuild"
+
+[[headers]]
+  for = "/api/*"
+  [headers.values]
+    Cache-Control = "no-store"
