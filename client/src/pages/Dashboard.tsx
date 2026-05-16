@@ -48,11 +48,18 @@ export default function Dashboard() {
   const computed = useMemo(() => {
     if (!data) return null;
     const daily = data.daily;
-    const last7 = daily.slice(-7);
-    const prior7 = daily.slice(-14, -7);
 
+    // Only consider covered days (non-null dailyRequests) for last-7/prior-7
+    // comparisons. This stops a 7-day window that straddles a coverage edge
+    // from being half empty and producing nonsense deltas.
+    const covered = daily.filter((r) => r.dailyRequests != null);
+    const last7 = covered.slice(-7);
+    const prior7 = covered.slice(-14, -7);
+
+    // sum() ignores nulls so 30-day totals reflect the data we actually have,
+    // not a phantom "0" for days the log was rotated away.
     const sum = (rows: typeof daily, k: keyof (typeof daily)[number]) =>
-      rows.reduce((s, r) => s + Number(r[k]), 0);
+      rows.reduce((s, r) => s + (typeof r[k] === "number" ? (r[k] as number) : 0), 0);
 
     const totals = {
       requests: sum(daily, "dailyRequests"),
@@ -94,7 +101,13 @@ export default function Dashboard() {
       discovery: pctDelta(last7Vals.discovery, prior7Vals.discovery),
     };
 
-    // Anomaly detection per metric (>20 above 7-day baseline)
+    // Anomaly detection per metric (>20 above 7-day baseline). The detector
+    // skips null days both as candidates and inside the rolling baseline.
+    const discoverySum = (r: (typeof daily)[number]) =>
+      r.discoveryMcp == null && r.discoveryAiPlugin == null && r.discoveryNostr == null
+        ? null
+        : (r.discoveryMcp ?? 0) + (r.discoveryAiPlugin ?? 0) + (r.discoveryNostr ?? 0);
+
     const anomalies: Anomaly[] = [
       ...detectAnomalies(
         daily.map((r) => ({ date: r.date, value: r.dailyRequests })),
@@ -117,10 +130,7 @@ export default function Dashboard() {
         ANOMALY_THRESHOLD,
       ),
       ...detectAnomalies(
-        daily.map((r) => ({
-          date: r.date,
-          value: r.discoveryMcp + r.discoveryAiPlugin + r.discoveryNostr,
-        })),
+        daily.map((r) => ({ date: r.date, value: discoverySum(r) })),
         "Discovery hits",
         ANOMALY_THRESHOLD,
       ),
@@ -145,8 +155,17 @@ export default function Dashboard() {
   const uaAnom = anomDates("New user agents");
   const discAnom = anomDates("Discovery hits");
 
+  // Pass through nulls so spark lines and main charts render gaps for
+  // uncovered days instead of dropping to zero.
   const sparkOf = (key: keyof (typeof daily)[number]) =>
-    daily.map((r) => ({ date: r.date, value: Number(r[key]) }));
+    daily.map((r) => ({
+      date: r.date,
+      value: typeof r[key] === "number" ? (r[key] as number) : null,
+    }));
+
+  const coverage = data.coverage;
+  const partialCoverage =
+    coverage && coverage.coveredDays < coverage.totalDays;
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -162,6 +181,15 @@ export default function Dashboard() {
               </div>
               <div className="mt-1 text-xs text-muted-foreground">
                 agentry.com · last 30 days
+                {partialCoverage && coverage && (
+                  <span
+                    className="ml-1.5 text-amber-600 dark:text-amber-400"
+                    title={`Log coverage begins ${coverage.from}. Earlier days are not on disk.`}
+                    data-testid="text-coverage"
+                  >
+                    · {coverage.coveredDays} of {coverage.totalDays} days on disk
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -273,7 +301,14 @@ export default function Dashboard() {
             delta={deltas.discovery}
             spark={daily.map((r) => ({
               date: r.date,
-              value: r.discoveryMcp + r.discoveryAiPlugin + r.discoveryNostr,
+              value:
+                r.discoveryMcp == null &&
+                r.discoveryAiPlugin == null &&
+                r.discoveryNostr == null
+                  ? null
+                  : (r.discoveryMcp ?? 0) +
+                    (r.discoveryAiPlugin ?? 0) +
+                    (r.discoveryNostr ?? 0),
             }))}
             anomalous={discAnom.size > 0}
           />
@@ -321,6 +356,7 @@ export default function Dashboard() {
                   stroke="hsl(var(--chart-1))"
                   strokeWidth={2}
                   fill="url(#gReq)"
+                  connectNulls={false}
                 />
                 {daily
                   .filter((r) => reqAnom.has(r.date))
@@ -378,6 +414,7 @@ export default function Dashboard() {
                   stroke="hsl(var(--chart-2))"
                   strokeWidth={2}
                   fill="url(#gIp)"
+                  connectNulls={false}
                 />
                 {daily
                   .filter((r) => ipAnom.has(r.date))
@@ -473,6 +510,7 @@ export default function Dashboard() {
                   stroke="hsl(var(--chart-4))"
                   strokeWidth={2.25}
                   dot={{ r: 2.5, fill: "hsl(var(--chart-4))", strokeWidth: 0 }}
+                  connectNulls={false}
                 />
                 {daily
                   .filter((r) => uaAnom.has(r.date))
@@ -676,8 +714,13 @@ export default function Dashboard() {
         <p className="mt-8 flex items-center gap-2 text-xs text-muted-foreground">
           <Cpu className="h-3.5 w-3.5" />
           Data feed: <code className="rounded bg-muted px-1.5 py-0.5">GET /api/metrics</code>
-          <Globe className="ml-3 h-3.5 w-3.5" />
-          Replace the sample adapter in <code className="rounded bg-muted px-1.5 py-0.5">server/sampleData.ts</code> with a real ingest from your VPS access logs to go live.
+          {coverage && coverage.from && (
+            <>
+              <Globe className="ml-3 h-3.5 w-3.5" />
+              Log coverage from <span className="tabular">{coverage.from}</span> ·{" "}
+              {coverage.coveredDays} of {coverage.totalDays} days on disk
+            </>
+          )}
         </p>
       </main>
     </div>

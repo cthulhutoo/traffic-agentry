@@ -7,7 +7,7 @@ type Props = {
   label: string;
   value: number;
   delta: number;             // pct change vs prior 7-day window
-  spark: { date: string; value: number }[];
+  spark: { date: string; value: number | null }[];
   anomalous?: boolean;
   testId: string;
 };
@@ -64,6 +64,7 @@ export function KpiTile({ label, value, delta, spark, anomalous, testId }: Props
               strokeWidth={1.75}
               dot={false}
               isAnimationActive={false}
+              connectNulls={false}
             />
           </LineChart>
         </ResponsiveContainer>

@@ -67,8 +67,14 @@ def open_log(p: Path):
     return open(p, "r", errors="replace")
 
 
-def parse_logs(window_start: datetime):
-    """Stream every matching log line within the window."""
+def parse_logs(window_start: datetime, coverage: dict):
+    """Stream every matching log line within the window.
+
+    Also records `coverage['earliest']`, the earliest timestamp we saw across
+    all readable log files. Days before that are reported as `null` in the
+    snapshot so the dashboard can render them as gaps instead of zeros.
+    """
+    earliest: datetime | None = None
     for p in iter_log_files():
         try:
             with open_log(p) as fh:
@@ -80,16 +86,19 @@ def parse_logs(window_start: datetime):
                         ts = datetime.strptime(m.group("ts"), TS_FMT).astimezone(timezone.utc)
                     except ValueError:
                         continue
+                    if earliest is None or ts < earliest:
+                        earliest = ts
                     if ts < window_start:
                         # Older lines never come back since logs are append-only.
                         # Bail on rotated files; for the current file keep scanning
                         # because rare clock drift could put older timestamps anywhere.
                         if p.name != "access.log":
-                            return
+                            break
                         continue
                     yield ts, m
         except OSError as e:
             print(f"warn: cannot read {p}: {e}", file=sys.stderr)
+    coverage["earliest"] = earliest
 
 
 def daily_key(ts: datetime) -> str:
@@ -118,7 +127,8 @@ def build_snapshot(range_days: int = RANGE_DAYS) -> dict:
     seen_ua_before_window: set[str] = set()
     ua_first_seen_in_window: dict[str, str] = {}
 
-    for ts, m in parse_logs(start):
+    coverage: dict = {"earliest": None}
+    for ts, m in parse_logs(start, coverage):
         ip = m.group("ip")
         ua = m.group("ua") or "-"
         path = m.group("path").split("?", 1)[0]
@@ -158,10 +168,31 @@ def build_snapshot(range_days: int = RANGE_DAYS) -> dict:
                     "status": status,
                 })
 
-    # build daily array (zero-fill missing days)
+    # Determine the earliest covered date. Anything before this in the window
+    # has no source log file on disk anymore (logrotate retention) and is
+    # emitted as null so the dashboard renders a gap rather than a fake zero.
+    earliest = coverage.get("earliest")
+    coverage_start = earliest.date() if earliest else None
+
     daily = []
+    covered_days = 0
     for i in range(range_days):
-        d = (start + timedelta(days=i)).date().isoformat()
+        day = (start + timedelta(days=i)).date()
+        d = day.isoformat()
+        if coverage_start is not None and day < coverage_start:
+            # No log data for this day -> render as gap.
+            daily.append({
+                "date": d,
+                "dailyRequests": None,
+                "uniqueIps": None,
+                "mcpToolCalls": None,
+                "newUserAgents": None,
+                "discoveryMcp": None,
+                "discoveryAiPlugin": None,
+                "discoveryNostr": None,
+            })
+            continue
+        covered_days += 1
         unique = len(daily_unique_ips.get(d, set()))
         new_uas = sum(
             1 for ua, first in ua_first_seen_in_window.items()
@@ -200,6 +231,12 @@ def build_snapshot(range_days: int = RANGE_DAYS) -> dict:
     return {
         "generatedAt": now.isoformat().replace("+00:00", "Z"),
         "rangeDays": range_days,
+        "coverage": {
+            "from": (coverage_start.isoformat() if coverage_start else None),
+            "to": daily[-1]["date"],
+            "totalDays": range_days,
+            "coveredDays": covered_days,
+        },
         "daily": daily,
         "topUserAgents": top_user_agents,
         "topIps": top_ips,
@@ -232,9 +269,11 @@ def main():
     tmp = OUT_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(snapshot, separators=(",", ":")))
     tmp.replace(OUT_PATH)
+    cov = snapshot["coverage"]
     print(
         f"wrote {OUT_PATH} · "
-        f"{sum(d['dailyRequests'] for d in snapshot['daily'])} requests · "
+        f"{sum((d['dailyRequests'] or 0) for d in snapshot['daily'])} requests · "
+        f"{cov['coveredDays']}/{cov['totalDays']} days covered (from {cov['from']}) · "
         f"{len(snapshot['recentDiscovery'])} recent discovery hits"
     )
 
